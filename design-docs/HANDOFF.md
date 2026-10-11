@@ -100,9 +100,32 @@ Query params: `src`, `mount`, `interval` (ms, min 500, default 2000), `sep`,
   (`mixxx_deleted = 0`), building the string the way Mixxx's `$artist - $title`
   template does. No split is needed, and `" - Title"` (no artist) matches.
   Ties go to `last_played_at DESC NULLS LAST`. Duplicates are FLAC→MP3/M4A
-  conversions of one track, and Mixxx stamps `last_played_at` on the copy
-  actually playing. Returns album, bpm, key, genre, duration (`null` when
-  empty; bpm 0 means not analyzed).
+  conversions of one track. `last_played_at` marks the copy played *last
+  time*, not necessarily the one playing now, because Mixxx writes it late
+  (see "Mixxx DB write timing" below). In practice they are usually the same
+  file. Returns album, bpm, key, genre, duration (`null` when empty; bpm 0
+  means not analyzed).
+
+## Mixxx DB write timing
+
+Observed on 2026-10-11 with tracks freshly imported from USB (analyzed on
+load, not beforehand):
+
+- While a track is loaded, its new BPM/key, play count and `last_played_at`
+  are **not** in `mixxxdb.sqlite`. Example: "THE SHINING POLARIS (kors k mix)"
+  had been played but still had `bpm = 0`, empty key, `timesplayed = 0` and
+  `last_played_at = NULL`.
+- They appear later. "戦闘！カシオペア" returned `bpm: null` while playing, and
+  168.07 / Gm when queried again afterwards. It most likely happens when the
+  track leaves the deck, but the exact trigger wasn't confirmed in Mixxx's
+  code.
+- Tracks analyzed beforehand (Library → Analyze) have BPM/key in the DB from
+  the start. That fixed it, and it matches how the app is used: mostly
+  pre-analyzed tracks.
+
+Decision: no client-side retry. The page looks details up once per track
+change. A periodic re-lookup would only help if Mixxx saved mid-play, which
+it doesn't appear to.
 - Upstream timeouts are 2s. Failure → `502` with `{"error": "..."}`, which the
   page shows as "Can't reach Icecast".
 - The body is force-encoded to UTF-8 and scrubbed, because Icecast can emit
@@ -137,8 +160,9 @@ Query params: `src`, `mount`, `interval` (ms, min 500, default 2000), `sep`,
   `" - "` would split wrong. Pick a rarer separator in Mixxx's custom metadata
   format and pass it via `?sep=` if that matters.
 - Album/BPM/key/genre/duration come from the optional library lookup.
-  Displayed: album and BPM only (key, genre, duration are in the JSON). Most
-  tracks have no BPM/key until Mixxx analyzes them, which is expected.
+  Displayed: album and BPM only (key, genre, duration are in the JSON). BPM/key
+  are missing for tracks not analyzed before loading (see "Mixxx DB write
+  timing").
   Artwork is out of scope; most tracks have none.
 - If tags are edited in Mixxx while a track plays, the Icecast string and the
   DB may disagree briefly; the lookup returns `found: false` and the page

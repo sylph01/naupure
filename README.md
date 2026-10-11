@@ -124,10 +124,19 @@ curl -s "http://localhost:4567/track.json?q=lapix%20feat.%20DJ%E5%8B%9D%E4%B9%9F
 - `q` is the raw now-playing string from Icecast (`sep` sets the separator,
   default `" - "`). For Ogg streams with separate fields, pass `artist` and
   `title` instead.
-- `bpm`, `key`, `genre` and `album` are `null` when empty. BPM and key are
-  filled in only after Mixxx analyzes the track. `duration` is in seconds.
+- `bpm`, `key`, `genre` and `album` are `null` when empty. `duration` is in
+  seconds.
 - If several library entries match (e.g. FLAC/MP3/M4A copies of one track),
   the one Mixxx most recently played wins.
+
+**Analyze tracks before playing them.** Mixxx keeps a loaded track's analysis
+results (BPM, key) in memory and writes them to the library database later,
+apparently when the track leaves the deck. A track that is analyzed only when
+you load it (e.g. freshly imported from USB) shows no BPM on its first play,
+because the page looks details up once, at the track change. Run
+Library → Analyze on new tracks first; batch analysis saves each result to the
+database as it goes. Album, genre and duration come from file tags at import,
+so they show up either way.
 
 Environment variables:
 
@@ -161,6 +170,8 @@ Logs are in `/var/log/icecast2/` (`access.log`, `error.log`).
 | Non-Latin characters show as `?` | Mixxx's "Use UTF-8 encoding for metadata" is off |
 | Garbled characters (like `ã\x83...`) | `<charset>UTF-8</charset>` is missing from the mount |
 | Page says "Can't reach Icecast" | Icecast isn't running, or `ICECAST` points to the wrong place |
+| Album shows but BPM doesn't | The track wasn't analyzed before it was loaded; run Library → Analyze |
+| No album/BPM line at all | `server.rb` printed `Track details off: ...` at startup (gem or database missing), or the track's artist/title in Mixxx differs from the file the library has |
 
 To test without Mixxx (while some source is connected to `/mixxx`):
 
