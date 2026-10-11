@@ -17,6 +17,7 @@ Mixxx --(Live Broadcasting)--> Icecast :8000 <--(proxy)-- server.rb :4567 <--(po
 - Mixxx with Live Broadcasting
 - Icecast 2 (tested with 2.5.0 from Ubuntu 26.04 `apt`)
 - Ruby (standard library only, no gems)
+- Optional: Bundler and the `sqlite3` gem, to show album and BPM from your Mixxx library
 
 ## Setup
 
@@ -94,6 +95,40 @@ ruby server.rb
 
 Open <http://localhost:4567/>.
 
+### Optional: album and BPM from the Mixxx library
+
+```sh
+bundle install
+```
+
+This installs the `sqlite3` gem from the `Gemfile` (prebuilt, no compiler
+needed). `ruby server.rb` then picks it up; `bundle exec ruby server.rb` also
+works. `sudo apt install ruby-sqlite3` is an alternative to Bundler.
+
+With the `sqlite3` gem installed, `server.rb` looks the current track up in
+Mixxx's library (`~/.mixxx/mixxxdb.sqlite`, opened read-only) and the page
+shows album and BPM under the artist. On startup it prints either
+`Track details from ...` or the reason details are off. Without the gem or the
+database, the page shows artist and title only.
+
+The lookup is also available as JSON:
+
+```sh
+curl -s "http://localhost:4567/track.json?q=lapix%20feat.%20DJ%E5%8B%9D%E4%B9%9F%20-%20kokoro"
+```
+
+```json
+{"found":true,"album":"RAVE TAISEN COMPILATION ALBUM 2nd","bpm":85.5,"key":"Db","genre":null,"duration":427.44}
+```
+
+- `q` is the raw now-playing string from Icecast (`sep` sets the separator,
+  default `" - "`). For Ogg streams with separate fields, pass `artist` and
+  `title` instead.
+- `bpm`, `key`, `genre` and `album` are `null` when empty. BPM and key are
+  filled in only after Mixxx analyzes the track. `duration` is in seconds.
+- If several library entries match (e.g. FLAC/MP3/M4A copies of one track),
+  the one Mixxx most recently played wins.
+
 Environment variables:
 
 | Var | Default | |
@@ -101,6 +136,7 @@ Environment variables:
 | `PORT` | `4567` | port for the page |
 | `ICECAST` | `http://localhost:8000` | Icecast base URL |
 | `BIND` | `127.0.0.1` | listen address |
+| `MIXXX_DB` | `~/.mixxx/mixxxdb.sqlite` | Mixxx library for the optional lookup |
 
 Page query parameters:
 
@@ -112,6 +148,7 @@ Page query parameters:
 | `src` | status JSON URL to poll instead of the default |
 | `transparent=1` | transparent background (e.g. OBS browser source) |
 | `minimal=1` | hide the meta row (listeners, mount, elapsed time) |
+| `details=0` | don't look up or show album/BPM |
 
 ## Troubleshooting
 

@@ -66,6 +66,13 @@
     margin: .3em 0 0;
     overflow-wrap: anywhere;
   }
+  .details {
+    font-size: clamp(14px, 2vw, 26px);
+    color: var(--muted);
+    margin: .5em 0 0;
+    overflow-wrap: anywhere;
+  }
+  .details:empty { display: none; }
   .meta {
     margin-top: 1.4em;
     font-size: clamp(11px, 1.3vw, 15px);
@@ -83,6 +90,7 @@
     <div id="track" class="track">
       <h1 id="title" class="title">—</h1>
       <p id="artist" class="artist"></p>
+      <p id="details" class="details"></p>
     </div>
     <div id="meta" class="meta">
       <span id="since"></span>
@@ -100,18 +108,22 @@
   //   ?sep=%20-%20                                  "artist - title" separator
   //   ?transparent=1                                transparent bg (OBS)
   //   ?minimal=1                                    hide the bottom meta row
+  //   ?details=0                                    skip the album/BPM lookup
   const q = new URLSearchParams(location.search);
   const SRC = q.get("src") ||
     (location.protocol.startsWith("http") ? "/status-json.xsl" : "http://localhost:8000/status-json.xsl");
   const MOUNT = q.get("mount");
   const INTERVAL = Math.max(500, parseInt(q.get("interval") || "2000", 10));
   const SEP = q.get("sep") || " - ";
+  // Album/BPM come from server.rb's optional /track.json (Mixxx library lookup)
+  let lookup = q.get("details") !== "0" && location.protocol.startsWith("http");
   if (q.get("transparent") === "1") document.body.classList.add("transparent");
   if (q.get("minimal") === "1") document.getElementById("meta").classList.add("hidden");
 
   const $ = (id) => document.getElementById(id);
   let current = null;      // "artist\u0000title" key of the displayed track
   let changedAt = null;
+  let details = { key: null, text: "" };   // album/BPM line for track `key`
 
   // Icecast returns `source` as an object for one mount, an array for several.
   function pickSource(icestats) {
@@ -135,6 +147,36 @@
     };
   }
 
+  // Send the raw "artist - title" string when that is all Icecast has, so the
+  // server can match it whole instead of trusting our split.
+  function lookupParams(s) {
+    const f = fields(s);
+    return f.artist ? { artist: f.artist, title: f.title } : { q: f.title, sep: SEP };
+  }
+
+  function fmtDetails(d) {
+    const parts = [];
+    if (d.album) parts.push(d.album);
+    if (d.bpm) parts.push(`${+d.bpm.toFixed(1)} BPM`);
+    return parts.join(" · ");
+  }
+
+  async function fetchDetails(key, params) {
+    if (!lookup) return;
+    try {
+      const res = await fetch("/track.json?" + new URLSearchParams(params), { cache: "no-store" });
+      if (res.status === 404) { lookup = false; return; }   // lookup not available
+      if (!res.ok) return;
+      const d = await res.json();
+      if (key !== current) return;                         // track changed meanwhile
+      details = { key, text: d.found ? fmtDetails(d) : "" };
+      // During the fade, apply() shows it once the new track is in place
+      if (!$("track").classList.contains("swap")) $("details").textContent = details.text;
+    } catch (e) {
+      // Details are optional; keep showing artist/title
+    }
+  }
+
   // Mixxx sends a single "artist - title" string by default (configurable in
   // Preferences → Live Broadcasting → Custom metadata). Icecast may also expose
   // separate `artist` / `title` fields for Ogg streams.
@@ -156,13 +198,14 @@
     $("dot").className = "dot" + (state ? " " + state : "");
   }
 
-  function render(track) {
+  function render(track, params) {
     const key = track.artist + "\u0000" + track.title;
     if (key === current) return;
     const el = $("track");
     const apply = () => {
       $("title").textContent = track.title || "—";
       $("artist").textContent = track.artist;
+      $("details").textContent = details.key === key ? details.text : "";
       document.title = track.title ? `${track.artist ? track.artist + " – " : ""}${track.title}` : "Now Playing";
       el.classList.remove("swap");
     };
@@ -170,6 +213,7 @@
     else { el.classList.add("swap"); setTimeout(apply, 450); }
     current = key;
     changedAt = Date.now();
+    if (track.title) fetchDetails(key, params);
   }
 
   function fmtSince(ms) {
@@ -188,7 +232,7 @@
         setStatus("No stream — start broadcasting in Mixxx", "err");
       } else {
         setStatus("Now playing", "live");
-        render(parseTrack(s));
+        render(parseTrack(s), lookupParams(s));
         $("listeners").textContent = s.listeners != null ? `Listeners ${s.listeners}` : "";
         $("mount").textContent = s.listenurl ? new URL(s.listenurl).pathname : "";
       }

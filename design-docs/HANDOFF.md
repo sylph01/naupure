@@ -25,7 +25,7 @@ but, as far as we know, it never shipped. Check your build if MPRIS matters.
 | File | Role |
 |---|---|
 | `nowplaying.html` | Self-contained page (HTML + CSS + JS). Polls status JSON, parses, renders. |
-| `server.rb` | Stdlib-only Ruby server (`socket` + `net/http`, no gems). Serves the page at `/` and proxies `/status-json.xsl` → Icecast, so CORS is a non-issue. |
+| `server.rb` | Ruby server (`socket` + `net/http`). Serves the page at `/` and proxies `/status-json.xsl` → Icecast, so CORS is a non-issue. Optional `/track.json` library lookup needs the `sqlite3` gem (`Gemfile`, `bundle install`); everything else is stdlib only. |
 
 ## Running
 
@@ -76,6 +76,10 @@ project depends on:
   the first `SEP` (default `" - "`, matching Mixxx's default `$artist - $title`
   metadata format). It splits before trimming, because a track with no artist
   tag arrives as `" - Title"`.
+- Details: on each track change it calls `/track.json` (raw `q` + `sep`, or
+  `artist`/`title` when Icecast has separate fields) and shows album and BPM
+  in `#details`. Stale responses for an earlier track are dropped. A 404 turns
+  the lookup off for the session. `?details=0` disables it.
 - Re-renders only when artist+title changes (fade transition). Shows elapsed
   time since the change, listener count, and mount path.
 - Polls every `INTERVAL` ms via chained `setTimeout`, so requests never overlap.
@@ -87,8 +91,18 @@ Query params: `src`, `mount`, `interval` (ms, min 500, default 2000), `sep`,
 
 - One thread per connection, `Connection: close`, GET only.
 - Routes: `/`, `/index.html`, `/nowplaying.html` → page (re-read from disk on
-  every request, so edits show up on reload); `/status-json.xsl` → proxied.
-  Anything else → 404.
+  every request, so edits show up on reload); `/status-json.xsl` → proxied;
+  `/track.json` → library lookup. Anything else → 404.
+- `/track.json`: `require "sqlite3"` is attempted at startup. If the gem or
+  `MIXXX_DB` is missing, it returns 404 `{"error": ...}`. Otherwise it opens
+  the DB read-only per request and matches
+  `coalesce(artist,'') || sep || coalesce(title,'') = q` against `library`
+  (`mixxx_deleted = 0`), building the string the way Mixxx's `$artist - $title`
+  template does. No split is needed, and `" - Title"` (no artist) matches.
+  Ties go to `last_played_at DESC NULLS LAST`. Duplicates are FLAC→MP3/M4A
+  conversions of one track, and Mixxx stamps `last_played_at` on the copy
+  actually playing. Returns album, bpm, key, genre, duration (`null` when
+  empty; bpm 0 means not analyzed).
 - Upstream timeouts are 2s. Failure → `502` with `{"error": "..."}`, which the
   page shows as "Can't reach Icecast".
 - The body is force-encoded to UTF-8 and scrubbed, because Icecast can emit
@@ -122,17 +136,17 @@ Query params: `src`, `mount`, `interval` (ms, min 500, default 2000), `sep`,
 - The split on `SEP` uses the first occurrence. An artist name containing
   `" - "` would split wrong. Pick a rarer separator in Mixxx's custom metadata
   format and pass it via `?sep=` if that matters.
-- No album/BPM/key/artwork: Icecast only carries the title string. Getting
-  those would mean combining this with the SQLite approach (look up the track
-  in `library` by artist+title).
+- Album/BPM/key/genre/duration come from the optional library lookup.
+  Displayed: album and BPM only (key, genre, duration are in the JSON). Most
+  tracks have no BPM/key until Mixxx analyzes them, which is expected.
+  Artwork is out of scope; most tracks have none.
+- If tags are edited in Mixxx while a track plays, the Icecast string and the
+  DB may disagree briefly; the lookup returns `found: false` and the page
+  shows artist/title only.
 
 ## Possible next steps
 
 - Tune the visuals for a second-screen display next to Mixxx (OBS is
   secondary).
-- Optional enrichment: in `server.rb`, add `/track.json` that takes the Icecast
-  title, looks it up in `~/.mixxx/mixxxdb.sqlite` (read-only), and returns
-  album/BPM/key. Needs the `sqlite3` gem, so it would break "stdlib only". Keep
-  it optional.
 - Optional: Server-Sent Events from `server.rb` instead of client polling.
 - Optional: a set history list (last N tracks) on the page.
