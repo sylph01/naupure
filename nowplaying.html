@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Now Playing</title>
+<style>
+  :root {
+    --bg: #0e0f13;
+    --fg: #f2f2f2;
+    --muted: #8a8f9c;
+    --accent: #ff5a36;
+    --ok: #3ddc84;
+    --err: #ff4d4d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Inter", "Helvetica Neue", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+  /* Transparent background for OBS browser sources: add ?transparent=1 */
+  body.transparent { background: transparent; }
+
+  .card {
+    width: min(90vw, 1100px);
+    padding: 0 16px;
+  }
+  .label {
+    display: flex;
+    align-items: center;
+    gap: .6em;
+    font-size: clamp(12px, 1.6vw, 18px);
+    letter-spacing: .25em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: .8em;
+  }
+  .dot {
+    width: .7em; height: .7em; border-radius: 50%;
+    background: var(--muted);
+    transition: background .3s;
+  }
+  .dot.live { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  .dot.err  { background: var(--err); }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+
+  .track { transition: opacity .45s ease, transform .45s ease; }
+  .track.swap { opacity: 0; transform: translateY(12px); }
+
+  .title {
+    font-size: clamp(28px, 6vw, 80px);
+    font-weight: 800;
+    line-height: 1.05;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .artist {
+    font-size: clamp(18px, 3.2vw, 40px);
+    font-weight: 500;
+    color: var(--accent);
+    margin: .3em 0 0;
+    overflow-wrap: anywhere;
+  }
+  .meta {
+    margin-top: 1.4em;
+    font-size: clamp(11px, 1.3vw, 15px);
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4em 1.6em;
+  }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="label"><span id="dot" class="dot"></span><span id="status">Connecting…</span></div>
+    <div id="track" class="track">
+      <h1 id="title" class="title">—</h1>
+      <p id="artist" class="artist"></p>
+    </div>
+    <div id="meta" class="meta">
+      <span id="since"></span>
+      <span id="listeners"></span>
+      <span id="mount"></span>
+    </div>
+  </main>
+
+<script>
+(() => {
+  // ---- Configuration (override with query params) ----------------------
+  //   ?src=http://localhost:8000/status-json.xsl   status endpoint
+  //   ?mount=/mixxx                                 pick a mount if several
+  //   ?interval=2000                                poll interval (ms)
+  //   ?sep=%20-%20                                  "artist - title" separator
+  //   ?transparent=1                                transparent bg (OBS)
+  //   ?minimal=1                                    hide the bottom meta row
+  const q = new URLSearchParams(location.search);
+  const SRC = q.get("src") ||
+    (location.protocol.startsWith("http") ? "/status-json.xsl" : "http://localhost:8000/status-json.xsl");
+  const MOUNT = q.get("mount");
+  const INTERVAL = Math.max(500, parseInt(q.get("interval") || "2000", 10));
+  const SEP = q.get("sep") || " - ";
+  if (q.get("transparent") === "1") document.body.classList.add("transparent");
+  if (q.get("minimal") === "1") document.getElementById("meta").classList.add("hidden");
+
+  const $ = (id) => document.getElementById(id);
+  let current = null;      // "artist\u0000title" key of the displayed track
+  let changedAt = null;
+
+  // Icecast returns `source` as an object for one mount, an array for several.
+  function pickSource(icestats) {
+    let src = icestats && icestats.source;
+    if (!src) return null;
+    if (!Array.isArray(src)) src = [src];
+    if (MOUNT) {
+      return src.find(s => (s.listenurl || "").endsWith(MOUNT)) || null;
+    }
+    // Prefer a source that actually carries metadata
+    return src.find(s => s.title || s.artist) || src[0];
+  }
+
+  // Mixxx sends a single "artist - title" string by default (configurable in
+  // Preferences → Live Broadcasting → Custom metadata). Icecast may also expose
+  // separate `artist` / `title` fields for Ogg streams.
+  function parseTrack(s) {
+    let artist = (s.artist || "").trim();
+    let title = (s.title || "").trim();
+    if (!artist && title.includes(SEP)) {
+      const i = title.indexOf(SEP);
+      artist = title.slice(0, i).trim();
+      title = title.slice(i + SEP.length).trim();
+    }
+    return { artist, title };
+  }
+
+  function setStatus(text, state) {
+    $("status").textContent = text;
+    $("dot").className = "dot" + (state ? " " + state : "");
+  }
+
+  function render(track) {
+    const key = track.artist + "\u0000" + track.title;
+    if (key === current) return;
+    const el = $("track");
+    const apply = () => {
+      $("title").textContent = track.title || "—";
+      $("artist").textContent = track.artist;
+      document.title = track.title ? `${track.artist ? track.artist + " – " : ""}${track.title}` : "Now Playing";
+      el.classList.remove("swap");
+    };
+    if (current === null) { apply(); }
+    else { el.classList.add("swap"); setTimeout(apply, 450); }
+    current = key;
+    changedAt = Date.now();
+  }
+
+  function fmtSince(ms) {
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    return `${m}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch(SRC, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const s = pickSource(data.icestats);
+      if (!s) {
+        setStatus("No stream — start broadcasting in Mixxx", "err");
+      } else {
+        setStatus("Now playing", "live");
+        render(parseTrack(s));
+        $("listeners").textContent = s.listeners != null ? `Listeners ${s.listeners}` : "";
+        $("mount").textContent = s.listenurl ? new URL(s.listenurl).pathname : "";
+      }
+    } catch (e) {
+      setStatus(`Can't reach Icecast (${e.message})`, "err");
+    } finally {
+      setTimeout(poll, INTERVAL);
+    }
+  }
+
+  setInterval(() => {
+    $("since").textContent = changedAt ? `Playing for ${fmtSince(Date.now() - changedAt)}` : "";
+  }, 1000);
+
+  poll();
+})();
+</script>
+</body>
+</html>
