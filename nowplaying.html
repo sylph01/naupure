@@ -122,21 +122,33 @@
       return src.find(s => (s.listenurl || "").endsWith(MOUNT)) || null;
     }
     // Prefer a source that actually carries metadata
-    return src.find(s => s.title || s.artist) || src[0];
+    return src.find(s => fields(s).title || fields(s).artist) || src[0];
+  }
+
+  // Icecast 2.4 puts metadata at the top of the source (`title`, `artist`).
+  // Icecast 2.5 nests it under `metadata`, e.g. `metadata.x_icy_title` for MP3.
+  function fields(s) {
+    const m = s.metadata || {};
+    return {
+      artist: s.artist || m.artist || "",
+      title: s.title || m.title || m.x_icy_title || "",
+    };
   }
 
   // Mixxx sends a single "artist - title" string by default (configurable in
   // Preferences → Live Broadcasting → Custom metadata). Icecast may also expose
   // separate `artist` / `title` fields for Ogg streams.
   function parseTrack(s) {
-    let artist = (s.artist || "").trim();
-    let title = (s.title || "").trim();
+    const f = fields(s);
+    let artist = f.artist.trim();
+    let title = f.title;
+    // Split before trimming: a track with no artist tag arrives as " - Title"
     if (!artist && title.includes(SEP)) {
       const i = title.indexOf(SEP);
-      artist = title.slice(0, i).trim();
-      title = title.slice(i + SEP.length).trim();
+      artist = title.slice(0, i);
+      title = title.slice(i + SEP.length);
     }
-    return { artist, title };
+    return { artist: artist.trim(), title: title.trim() };
   }
 
   function setStatus(text, state) {
